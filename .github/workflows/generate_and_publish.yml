@@ -1,0 +1,197 @@
+name: Generate Picks (API-Football) & Publish
+
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "20 7 * * *"  # daily @ 07:20 UTC – change if you like
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      API_FOOTBALL_KEY: ${{ secrets.API_FOOTBALL_KEY }}
+      PUBLIC_BASE_URL: ${{ vars.PUBLIC_BASE_URL || 'https://footyev.com' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install deps
+        run: pip install requests
+
+      - name: Generate meta.json + ev_picks.json (EPL + Championship, next 2 days)
+        run: |
+          python - <<'PY'
+          import os, math, json, datetime as dt, requests
+
+          KEY = os.environ["API_FOOTBALL_KEY"]
+          HEAD = {"x-apisports-key": KEY}
+          BASE = "https://v3.football.api-sports.io"
+
+          # API-FOOTBALL league IDs (stable):
+          LEAGUES = [(39, "EPL"), (40, "CHAMP")]   # Premier League, Championship
+          SEASON = dt.datetime.utcnow().year if dt.datetime.utcnow().month >= 7 else dt.datetime.utcnow().year - 1
+
+          # date window (today + tomorrow)
+          today = dt.date.today()
+          dates = [today, today + dt.timedelta(days=1)]
+
+          def api(path, **params):
+            r = requests.get(BASE + path, headers=HEAD, params=params, timeout=20)
+            r.raise_for_status()
+            return r.json()["response"]
+
+          def last_matches(team_id, n=10):
+            # recent team form (finished games only)
+            return api("/fixtures", team=team_id, season=SEASON, last=n, status="FT")
+
+          def team_avgs(team_id, n=10):
+            games = last_matches(team_id, n)
+            if not games:
+              return (1.2, 1.2)  # default tiny prior
+            gf = ga = 0.0
+            for g in games:
+              h = g["teams"]["home"]["id"]
+              a = g["teams"]["away"]["id"]
+              hg = g["goals"]["home"] or 0
+              ag = g["goals"]["away"] or 0
+              if team_id == h:
+                gf += hg; ga += ag
+              else:
+                gf += ag; ga += hg
+            m = max(1, len(games))
+            return (gf/m, ga/m)
+
+          def poisson_pmf(k, lam):
+            return math.exp(-lam) * (lam**k) / math.factorial(k)
+
+          def match_probs(lh, la, max_goals=8):
+            # Home/away goal means -> H/D/A probabilities (independent Poisson)
+            probs_home = [poisson_pmf(i, lh) for i in range(max_goals+1)]
+            probs_away = [poisson_pmf(j, la) for j in range(max_goals+1)]
+            # normalize tiny rounding
+            s1, s2 = sum(probs_home), sum(probs_away)
+            probs_home = [p/s1 for p in probs_home]; probs_away = [p/s2 for p in probs_away]
+
+            ph = pd = 0.0
+            for i, p_i in enumerate(probs_home):
+              for j, p_j in enumerate(probs_away):
+                if i > j: ph += p_i*p_j
+                elif i == j: pd += p_i*p_j
+            pa = 1.0 - ph - pd
+            return max(ph,0.0), max(pd,0.0), max(pa,0.0)
+
+          def best_market_odds(fixture_id):
+            # Grab 1X2 market; take the BEST (max) across all books
+            try:
+              resp = api("/odds", fixture=fixture_id)
+            except Exception:
+              return None
+            best = {"home": 0.0, "draw": 0.0, "away": 0.0}
+            for book in resp:
+              for market in book.get("bookmakers", []):
+                for m in market.get("bets", []):
+                  if m.get("name","").lower() in ("match winner","1x2","1x2 - full time"):
+                    for v in m.get("values", []):
+                      val = (v.get("odd") or "").strip()
+                      try: odd = float(val)
+                      except: continue
+                      n = v.get("value","").lower()
+                      if n in ("home","1"): best["home"] = max(best["home"], odd)
+                      elif n in ("draw","x"): best["draw"] = max(best["draw"], odd)
+                      elif n in ("away","2"): best["away"] = max(best["away"], odd)
+            if min(best.values() or [0]) == 0.0:  # no market
+              return None
+            return best
+
+          out = []
+          for lid, lname in LEAGUES:
+            for d in dates:
+              fixtures = api("/fixtures", league=lid, season=SEASON, date=d.isoformat())
+              for f in fixtures:
+                if f["fixture"]["status"]["short"] not in ("NS","TBD","PST"):  # only upcoming
+                  continue
+                fid = f["fixture"]["id"]
+                h = f["teams"]["home"]; a = f["teams"]["away"]
+                if not (h and a): continue
+
+                # Team goal means (simple combo of for/against) + home advantage
+                h_for, h_against = team_avgs(h["id"], 10)
+                a_for, a_against = team_avgs(a["id"], 10)
+                home_adv = 1.10
+                lam_home = max(0.2, (h_for * a_against) * home_adv)
+                lam_away = max(0.2, (a_for * h_against))
+
+                p_home, p_draw, p_away = match_probs(lam_home, lam_away)
+
+                # Market odds (best across books)
+                odds = best_market_odds(fid) or {}
+                evs = {}
+                def ev(p, o): return p*(o-1) - (1-p) if o and o>1 else None
+                evs["home"] = ev(p_home, odds.get("home"))
+                evs["draw"] = ev(p_draw, odds.get("draw"))
+                evs["away"] = ev(p_away, odds.get("away"))
+
+                # choose best side by EV
+                best_side = max([k for k in evs if evs[k] is not None], key=lambda k: evs[k], default=None)
+                best_ev = evs.get(best_side) if best_side else None
+                chosen_edge = None
+                # edge vs implied market prob if we have odds
+                if odds:
+                  imp = {k: (1/odds[k] if odds.get(k) else None) for k in ("home","draw","away")}
+                  s = sum([v for v in imp.values() if v]) or 1.0
+                  imp = {k: (imp[k]/s if imp.get(k) else None) for k in imp}
+                  model = {"home": p_home, "draw": p_draw, "away": p_away}
+                  if best_side and imp.get(best_side) is not None:
+                    chosen_edge = model[best_side] - imp[best_side]
+
+                out.append({
+                  "date": f["fixture"]["date"][:10],
+                  "league": lname,
+                  "home_team": h["name"],
+                  "away_team": a["name"],
+                  "xg_home": round(lam_home, 3),
+                  "xg_away": round(lam_away, 3),
+                  "p_home": round(p_home, 4),
+                  "p_draw": round(p_draw, 4),
+                  "p_away": round(p_away, 4),
+                  "book_home_odds": odds.get("home"),
+                  "book_draw_odds": odds.get("draw"),
+                  "book_away_odds": odds.get("away"),
+                  "best_side": best_side,
+                  "best_ev": round(best_ev, 4) if best_ev is not None else None,
+                  "chosen_edge": round(chosen_edge, 4) if chosen_edge is not None else None,
+                })
+
+          os.makedirs("public", exist_ok=True)
+          with open("public/ev_picks.json","w",encoding="utf-8") as f:
+            json.dump(out, f, indent=2)
+
+          meta = {
+            "last_updated_utc": dt.datetime.utcnow().replace(microsecond=0).isoformat(),
+            "items": len(out),
+            "season": f"{SEASON}/{(SEASON+1)%100:02d}",
+            "leagues": [name for _, name in LEAGUES],
+          }
+          with open("public/meta.json","w",encoding="utf-8") as f:
+            json.dump(meta, f, indent=2)
+
+          print(f"Wrote {len(out)} picks")
+          PY
+
+      - name: Upload artifact (public/)
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+      - name: Deploy to GitHub Pages
+        uses: actions/deploy-pages@v4
