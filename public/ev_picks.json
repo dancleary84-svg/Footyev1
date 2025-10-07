@@ -1,0 +1,47 @@
+[
+  {
+    "date": "2025-10-07",
+    "league": "EPL",
+    "home_team": "Arsenal",
+    "away_team": "Everton",
+    "p_home": 0.62,
+    "p_draw": 0.22,
+    "p_away": 0.16,
+    "best_side": "home",
+    "chosen_edge": 0.04,
+    "best_ev": 0.06,
+    "book_home_odds": 1.65,
+    "book_draw_odds": 3.8,
+    "book_away_odds": 5.2
+  },
+  {
+    "date": "2025-10-07",
+    "league": "CHAMP",
+    "home_team": "Leeds",
+    "away_team": "Sunderland",
+    "p_home": 0.48,
+    "p_draw": 0.3,
+    "p_away": 0.22,
+    "best_side": "draw",
+    "chosen_edge": 0.035,
+    "best_ev": 0.05,
+    "book_home_odds": 2.2,
+    "book_draw_odds": 3.1,
+    "book_away_odds": 3.6
+  },
+  {
+    "date": "2025-10-08",
+    "league": "EPL",
+    "home_team": "Chelsea",
+    "away_team": "Brighton",
+    "p_home": 0.45,
+    "p_draw": 0.29,
+    "p_away": 0.26,
+    "best_side": "home",
+    "chosen_edge": 0.03,
+    "best_ev": 0.04,
+    "book_home_odds": 2.05,
+    "book_draw_odds": 3.4,
+    "book_away_odds": 3.7
+  }
+]
