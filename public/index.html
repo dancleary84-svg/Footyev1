@@ -1,0 +1,12 @@
+<!doctype html><meta charset="utf-8">
+<title>FootyEV</title>
+<link rel="stylesheet" href="styles.css">
+<h1>FootyEV</h1>
+<p><a href="ev_picks.json">ev_picks.json</a> · <a href="meta.json">meta.json</a></p>
+<span id="badge">Updated: —</span>
+<script>
+fetch('meta.json').then(r=>r.json()).then(m=>{
+  document.getElementById('badge').textContent =
+    `Updated: ${m.last_updated_utc||'—'} UTC · ${m.items||0} picks`;
+}).catch(()=>{});
+</script>
