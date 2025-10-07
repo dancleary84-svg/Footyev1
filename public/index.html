@@ -1,12 +1,75 @@
-<!doctype html><meta charset="utf-8">
-<title>FootyEV</title>
-<link rel="stylesheet" href="styles.css">
-<h1>FootyEV</h1>
-<p><a href="ev_picks.json">ev_picks.json</a> · <a href="meta.json">meta.json</a></p>
-<span id="badge">Updated: —</span>
-<script>
-fetch('meta.json').then(r=>r.json()).then(m=>{
-  document.getElementById('badge').textContent =
-    `Updated: ${m.last_updated_utc||'—'} UTC · ${m.items||0} picks`;
-}).catch(()=>{});
-</script>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>FootyEV — EPL & Championship</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="wrap head">
+    <div class="brand">
+      <div class="logo">⚽</div>
+      <div>
+        <h1>FootyEV</h1>
+        <p class="sub">Model probabilities & value score (info only)</p>
+      </div>
+    </div>
+    <div class="badge" id="badge">Updated: —</div>
+  </header>
+
+  <main class="wrap">
+    <div id="notice" class="muted">Loading ev_picks.json…</div>
+    <div class="table-wrap">
+      <table id="tbl" class="tbl" hidden>
+        <thead>
+          <tr>
+            <th>Date</th><th>League</th><th>Home</th><th>Away</th>
+            <th>H%</th><th>D%</th><th>A%</th><th>Value</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <footer class="wrap foot">
+    <small>© <span id="yr"></span> FootyEV · <a href="ev_picks.json">JSON</a> · <a href="meta.json">meta</a></small>
+  </footer>
+
+  <script>
+    document.getElementById('yr').textContent = new Date().getFullYear();
+    fetch('meta.json').then(r=>r.json()).then(m=>{
+      const b = document.getElementById('badge');
+      b.textContent = `Updated: ${m.last_updated_utc || '—'} UTC · ${m.items || 0} picks`;
+    }).catch(()=>{});
+
+    function pct(x){ return (Math.round((x||0)*1000)/10).toFixed(1) + '%'; }
+    function val(x){ return (Math.round((x||0)*1000)/10).toFixed(1) + '%'; }
+
+    fetch('ev_picks.json')
+      .then(r=>r.json())
+      .then(rows=>{
+        const tb = document.querySelector('#tbl tbody');
+        rows.forEach(r=>{
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td>${r.date||''}</td>
+            <td>${r.league||''}</td>
+            <td>${r.home_team||''}</td>
+            <td>${r.away_team||''}</td>
+            <td>${pct(r.p_home)}</td>
+            <td>${pct(r.p_draw)}</td>
+            <td>${pct(r.p_away)}</td>
+            <td><span class="chip ${((r.best_ev||0)>0?'pos':'')}">${val(r.best_ev)}</span></td>`;
+          tb.appendChild(tr);
+        });
+        document.getElementById('tbl').hidden = false;
+        document.getElementById('notice').textContent = '';
+      })
+      .catch(()=>{
+        document.getElementById('notice').textContent = 'ev_picks.json not found yet (that’s ok)';
+      });
+  </script>
+</body>
+</html>
